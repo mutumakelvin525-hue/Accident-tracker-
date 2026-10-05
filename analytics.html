@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accident Analytics</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  header { background: #fff; padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.12);
+           display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; }
+  header a { color: #1f77b4; text-decoration: none; font-size: 14px; }
+  select, input { padding: 4px 6px; }
+  main { padding: 16px; display: grid; gap: 16px; max-width: 1000px; margin: auto; }
+  .card { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #eee; }
+  .note { font-size: 12px; color: #666; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Accident Analytics</h1>
+  <a href="/">← Map</a>
+  <label>Country <input id="country" placeholder="e.g. GB" size="4"></label>
+  <label>Type
+    <select id="type">
+      <option value="">All</option><option value="road">Road</option>
+      <option value="air">Air</option><option value="rail">Rail</option>
+      <option value="maritime">Maritime</option><option value="industrial">Industrial</option>
+    </select>
+  </label>
+  <button id="apply">Apply</button>
+</header>
+<main>
+  <div class="card"><h2>Incidents per month, by severity</h2><canvas id="monthly"></canvas></div>
+  <div class="card"><h2>By hour of day</h2><canvas id="hourly"></canvas></div>
+  <div class="card"><h2>By day of week</h2><canvas id="weekday"></canvas></div>
+  <div class="card">
+    <h2>Hotspots (densest ~2 km grid cells)</h2>
+    <table id="hot"><thead><tr><th>#</th><th>Location</th><th>Incidents</th><th>Fatal</th><th>Serious</th></tr></thead><tbody></tbody></table>
+    <div class="note">Counts reflect reported incidents only. Compare regions with care: reporting quality and traffic volume differ.</div>
+  </div>
+</main>
+
+<script>
+const COLORS = { fatal: "#d62728", serious: "#ff7f0e", minor: "#1f77b4", unknown: "#999" };
+const charts = {};
+
+function params() {
+  const q = new URLSearchParams();
+  const c = document.getElementById("country").value.trim();
+  const t = document.getElementById("type").value;
+  if (c) q.set("country", c);
+  if (t) q.set("accident_type", t);
+  return q.toString();
+}
+
+function draw(id, config) {
+  charts[id]?.destroy();
+  charts[id] = new Chart(document.getElementById(id), config);
+}
+
+async function refresh() {
+  const q = params();
+  const [monthly, hourly, hot] = await Promise.all([
+    fetch("/api/stats/monthly?" + q).then((r) => r.json()),
+    fetch("/api/stats/hourly?" + q).then((r) => r.json()),
+    fetch("/api/hotspots?" + q).then((r) => r.json()),
+  ]);
+
+  // Monthly stacked bars
+  const months = [...new Set(monthly.map((d) => d.month))].sort();
+  const sevs = ["fatal", "serious", "minor", "unknown"];
+  draw("monthly", {
+    type: "bar",
+    data: {
+      labels: months,
+      datasets: sevs.map((s) => ({
+        label: s,
+        backgroundColor: COLORS[s],
+        data: months.map((m) => monthly.find((d) => d.month === m && d.severity === s)?.count || 0),
+      })),
+    },
+    options: { scales: { x: { stacked: true }, y: { stacked: true } } },
+  });
+
+  draw("hourly", {
+    type: "bar",
+    data: { labels: [...Array(24).keys()], datasets: [{ label: "Incidents", data: hourly.by_hour, backgroundColor: "#1f77b4" }] },
+    options: { plugins: { legend: { display: false } } },
+  });
+
+  draw("weekday", {
+    type: "bar",
+    data: {
+      labels: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      datasets: [{ label: "Incidents", data: hourly.by_weekday, backgroundColor: "#2ca02c" }],
+    },
+    options: { plugins: { legend: { display: false } } },
+  });
+
+  const tbody = document.querySelector("#hot tbody");
+  tbody.innerHTML = hot
+    .map((h, i) => `<tr><td>${i + 1}</td>
+      <td><a target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=${h.lat}&mlon=${h.lng}#map=15/${h.lat}/${h.lng}">${h.lat.toFixed(3)}, ${h.lng.toFixed(3)}</a></td>
+      <td>${h.count}</td><td>${h.fatal}</td><td>${h.serious}</td></tr>`)
+    .join("");
+}
+
+document.getElementById("apply").addEventListener("click", refresh);
+refresh();
+</script>
+</body>
+</html>

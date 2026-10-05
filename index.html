@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Global Accident Tracker</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1; background: #fff;
+    padding: 10px 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    font-size: 13px; max-width: 220px;
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; }
+  #panel label { display: block; margin-top: 6px; }
+  #panel select, #panel input { width: 100%; box-sizing: border-box; margin-top: 2px; }
+  #status { margin-top: 8px; color: #555; }
+  .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 4px 0 8px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>Accident Tracker</h1>
+  <label>Severity
+    <select id="severity">
+      <option value="">All</option>
+      <option value="fatal">Fatal</option>
+      <option value="serious">Serious</option>
+      <option value="minor">Minor</option>
+    </select>
+  </label>
+  <label>From <input type="date" id="from"></label>
+  <label>To <input type="date" id="to"></label>
+  <div class="legend">
+    <span style="background:#d62728"></span>Fatal
+    <span style="background:#ff7f0e"></span>Serious
+    <span style="background:#1f77b4"></span>Minor
+  </div>
+  <div id="status">Zoom in to load incidents.</div>
+</div>
+
+<script>
+const map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors",
+      },
+    },
+    layers: [{ id: "osm", type: "raster", source: "osm" }],
+  },
+  center: [-1.5, 52.8],  // UK, where the first dataset is
+  zoom: 6,
+});
+map.addControl(new maplibregl.NavigationControl());
+
+const MIN_ZOOM = 8;  // avoid loading huge areas
+let timer;
+
+map.on("load", () => {
+  map.addSource("incidents", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "incidents",
+    type: "circle",
+    source: "incidents",
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 2, 14, 7],
+      "circle-opacity": 0.75,
+      "circle-color": ["match", ["get", "severity"],
+        "fatal", "#d62728", "serious", "#ff7f0e", "minor", "#1f77b4", "#888"],
+    },
+  });
+
+  map.on("click", "incidents", (e) => {
+    const p = e.features[0].properties;
+    new maplibregl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(
+        `<b>${p.type} accident</b><br>` +
+        `Severity: ${p.severity}<br>` +
+        `When: ${new Date(p.occurred_at).toLocaleString()}<br>` +
+        `Vehicles: ${p.vehicles ?? "?"}, injuries: ${p.injuries ?? "?"}<br>` +
+        `Status: ${p.status}`
+      )
+      .addTo(map);
+  });
+  map.on("mouseenter", "incidents", () => (map.getCanvas().style.cursor = "pointer"));
+  map.on("mouseleave", "incidents", () => (map.getCanvas().style.cursor = ""));
+
+  load();
+});
+
+map.on("moveend", () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+["severity", "from", "to"].forEach((id) => document.getElementById(id).addEventListener("change", load));
+
+async function load() {
+  const status = document.getElementById("status");
+  if (map.getZoom() < MIN_ZOOM) {
+    status.textContent = "Zoom in to load incidents.";
+    map.getSource("incidents")?.setData({ type: "FeatureCollection", features: [] });
+    return;
+  }
+  const b = map.getBounds();
+  const q = new URLSearchParams({
+    bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","),
+  });
+  const sev = document.getElementById("severity").value;
+  const from = document.getElementById("from").value;
+  const to = document.getElementById("to").value;
+  if (sev) q.set("severity", sev);
+  if (from) q.set("date_from", from + "T00:00:00");
+  if (to) q.set("date_to", to + "T23:59:59");
+
+  status.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/incidents?" + q);
+    const data = await res.json();
+    map.getSource("incidents").setData(data);
+    status.textContent = data.features.length + " incidents" + (data.truncated ? " (limit reached, zoom in)" : "");
+  } catch (err) {
+    status.textContent = "Failed to load data.";
+  }
+}
+</script>
+</body>
+</html>
